@@ -74,32 +74,33 @@ def train_model(model, model_name, num_epochs=300, learning_rate=0.001,
 
                 result_iter = normal_iter()
 
-            for i, (log_probs, target) in enumerate(result_iter):
-                with Profiler('train_loss_fn'):
-                    loss = loss_fn(log_probs.transpose(1, 2), target)
+            with Profiler('train_loop'):
+                for i, (log_probs, target) in enumerate(result_iter):
+                    with Profiler('train_loss_fn'):
+                        loss = loss_fn(log_probs.transpose(1, 2), target)
 
-                with Profiler('train_backward'):
-                    loss.backward()
+                    with Profiler('train_backward'):
+                        loss.backward()
 
-                with Profiler('train_opt.step'):
-                    opt.step()
+                    with Profiler('train_opt.step'):
+                        opt.step()
 
-                with Profiler('train_opt.zero_grad'):
-                    opt.zero_grad()
+                    with Profiler('train_opt.zero_grad'):
+                        opt.zero_grad()
 
-                with Profiler('train_stats'):
-                    num_correct = (log_probs.detach().argmax(dim=2) == target).sum().float()
-                    ppl = loss.detach().exp()
-                    acc = 100.0 * num_correct / target.numel()
+                    with Profiler('train_stats'):
+                        num_correct = (log_probs.detach().argmax(dim=2) == target).sum().float()
+                        ppl = loss.detach().exp()
+                        acc = 100.0 * num_correct / target.numel()
 
-                    ema_rate = 0.99 ** min(20, batch_size)
-                    ppl_ema = ppl_ema * ema_rate + ppl * (1 - ema_rate)
-                    acc_ema = acc_ema * ema_rate + acc * (1 - ema_rate)
+                        ema_rate = 0.99 ** min(20, batch_size)
+                        ppl_ema = ppl_ema * ema_rate + ppl * (1 - ema_rate)
+                        acc_ema = acc_ema * ema_rate + acc * (1 - ema_rate)
 
-                    # do some logging for perplexity and accuracy
-                    runtime = round(time.time() - epoch_start_time)
-                    print(f'\rEpoch {epoch} | Time: {runtime} sec | Batch #{i + 1}/{len(train_iter)} | '
-                          f'Train PPL: {ppl_ema:.2f} | Train Acc: {acc_ema:.2f}%', end='')
+                        # do some logging for perplexity and accuracy
+                        runtime = round(time.time() - epoch_start_time)
+                        print(f'\rEpoch {epoch} | Time: {runtime} sec | Batch #{i + 1}/{len(train_iter)} | '
+                              f'Train PPL: {ppl_ema:.2f} | Train Acc: {acc_ema:.2f}%', end='')
 
             print()
 
@@ -157,8 +158,10 @@ if __name__ == '__main__':
     # loading saved weights (comment this out if you want to start fresh)
     # model.load_state_dict(torch.load('model_weights/pipeline_best'))
 
+    Profiler.reset()
     train_model(
         model, model_name='pipeline', num_epochs=5,
         learning_rate=0.001, weight_decay=0.0, log_freq=1,
-        batch_size=1, pipeline=True
+        batch_size=16, pipeline=True, do_final_eval=False
     )
+    Profiler.print_times()

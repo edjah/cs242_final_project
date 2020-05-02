@@ -82,10 +82,12 @@ class PipelineRNN(nn.Module):
 
         self.rnn = nn.RNNCell(input_size, hidden_size, bias=bias, nonlinearity=nonlinearity)
 
-        self.sentences = deque()
-        self.targets = deque()
-        self.hiddens = deque()
-        self.outputs = deque()
+        self.sentences = []
+        self.targets = []
+        self.hiddens = []
+        self.outputs = []
+
+        self.finished = deque()
 
     def forward(self, x):
         # assume batch_first=True, so x.shape = (batch_size, seq_len, emb_size)
@@ -122,11 +124,13 @@ class PipelineRNN(nn.Module):
             - Otherwise: None
         """
         with Profiler('rnn_pipeline_step'):
+            if len(self.finished) > 0:
+                out, y = self.finished.popleft()
+                return out, y
+
             if len(self.sentences) == 0:
                 raise StopIteration
 
-            # TODO: need to make sure that at most one sentence finishes at a time
-            # for now, I should just make sure everything is padded to the same length
             with Profiler('rnn_pipeline_input_building'):
                 inputs = [s.pop() for s in self.sentences]
 
@@ -145,19 +149,31 @@ class PipelineRNN(nn.Module):
                     )
 
                 with Profiler('rnn_pipeline_update'):
-                    self.hiddens = deque(output_hiddens)
+                    self.hiddens = output_hiddens
                     for output, h in zip(self.outputs, output_hiddens):
                         output.append(h)
 
-            if len(self.sentences[0]) == 0:
-                with Profiler('rnn_pipeline_output'):
-                    # need to stack the hiddens along dim=1 which is the hidden
-                    # dimension. dim=0 is the batch dimension
-                    out = torch.stack(self.outputs.popleft(), dim=1)
-                    y = self.targets.popleft()
-                    self.sentences.popleft()
-                    self.hiddens.popleft()
+            with Profiler('rnn_finished_check'):
+                state = zip(self.sentences, self.targets, self.hiddens, self.outputs)
 
+                self.sentences = []
+                self.targets = []
+                self.hiddens = []
+                self.outputs = []
+
+                for s, t, h, o in state:
+                    if len(s) == 0:
+                        # need to stack the outputs along dim=1 which is the hidden
+                        # dimension. dim=0 is the batch dimension
+                        self.finished.append((torch.stack(o, dim=1), t))
+                    else:
+                        self.sentences.append(s)
+                        self.targets.append(t)
+                        self.hiddens.append(h)
+                        self.outputs.append(o)
+
+            if len(self.finished) > 0:
+                out, y = self.finished.popleft()
                 return out, y
 
 
