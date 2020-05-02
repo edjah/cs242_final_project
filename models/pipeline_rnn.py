@@ -38,11 +38,11 @@ class BatchedRnnTanhCell(torch.autograd.Function):
         grad_tanh = grad * (1 - result * result)
 
         # now compute the grad w.r.t the matmuls
-        grad_weight_ih = grad_tanh.unsqueeze(1) @ input.unsqueeze(0)
-        grad_input = weight_ih.t() @ grad_tanh
+        grad_weight_ih = grad_tanh.t() @ input
+        grad_input = grad_tanh @ weight_ih
 
-        grad_weight_hh = grad_tanh.unsqueeze(1) @ hidden.unsqueeze(0)
-        grad_hidden = weight_hh.t() @ grad_tanh
+        grad_weight_hh = grad_tanh.t() @ hidden
+        grad_hidden = grad_tanh @ weight_hh
 
         # now compute the grad w.r.t the biases
         grad_bias_ih = grad_tanh
@@ -102,12 +102,13 @@ class PipelineRNN(nn.Module):
     def add_to_pipeline(self, sentence, target):
         """
         Adds a `sentence` and it's corresponding `target` to the pipeline
+        `sentence.shape` should be (batch_size, seq_len, emb_size)
         """
         with Profiler('rnn_add_to_pipeline'):
             # store the sentences in reverse order, so that we can just pop from the end
-            self.sentences.append(list(sentence.unbind())[::-1])
+            self.sentences.append(list(sentence.unbind(1))[::-1])
             self.targets.append(target)
-            self.hiddens.append(torch.zeros(self.rnn.hidden_size, device=sentence.device))
+            self.hiddens.append(torch.zeros(sentence.shape[0], self.rnn.hidden_size, device=sentence.device))
             self.outputs.append([])
 
     def pipeline_step(self):
@@ -116,6 +117,8 @@ class PipelineRNN(nn.Module):
 
         Returns:
             - If a result has completed: a tuple of (rnn_output, target).
+              The rnn_output will be of shape (batch_size, seqlen, hidden_size)
+
             - Otherwise: None
         """
         with Profiler('rnn_pipeline_step'):
@@ -148,7 +151,9 @@ class PipelineRNN(nn.Module):
 
             if len(self.sentences[0]) == 0:
                 with Profiler('rnn_pipeline_output'):
-                    out = torch.stack(self.outputs.popleft())
+                    # need to stack the hiddens along dim=1 which is the hidden
+                    # dimension. dim=0 is the batch dimension
+                    out = torch.stack(self.outputs.popleft(), dim=1)
                     y = self.targets.popleft()
                     self.sentences.popleft()
                     self.hiddens.popleft()
@@ -180,16 +185,12 @@ class PipelineModel(nn.Module):
     def update_grad(self):
         self.rnn.update_grad()
 
-    def pipeline(self, batch_x, batch_y):
-        with Profiler('model_batch_unbind'):
-            xs = batch_x.unbind()
-            ys = batch_y.unbind()
-
-        for i in range(len(xs)):
+    def pipeline(self, data_iterator):
+        for batch in data_iterator:
             with Profiler('model_pipeline_emb'):
-                emb = self.emb_dropout(self.embeddings(xs[i]))
+                emb = self.emb_dropout(self.embeddings(batch.text))
 
-            self.rnn.add_to_pipeline(emb, ys[i])
+            self.rnn.add_to_pipeline(emb, batch.target)
             res = self.rnn.pipeline_step()
 
             if res is not None:

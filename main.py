@@ -63,59 +63,43 @@ def train_model(model, model_name, num_epochs=300, learning_rate=0.001,
             acc_ema = 0
             epoch_start_time = time.time()
 
-            for i, batch in enumerate(train_iter):
-                opt.zero_grad()
+            if pipeline:
+                result_iter = model.pipeline(train_iter)
+            else:
+                def normal_iter():
+                    for batch in train_iter:
+                        with Profiler('normal_forward'):
+                            result = model.forward(batch.text)
+                        yield result, batch.target
 
-                if pipeline:
-                    with Profiler('pipeline_loop'):
-                        for j, (log_probs, target) in enumerate(model.pipeline(batch.text, batch.target)):
-                            with Profiler('pipeline_sentence_post_forward'):
-                                with Profiler('pipeline_loss'):
-                                    loss = loss_fn(log_probs, target)
+                result_iter = normal_iter()
 
-                                with Profiler('pipeline_backward'):
-                                    loss.backward()
+            for i, (log_probs, target) in enumerate(result_iter):
+                with Profiler('train_loss_fn'):
+                    loss = loss_fn(log_probs.transpose(1, 2), target)
 
-                                with Profiler('pipeline_opt_step'):
-                                    opt.step()
-                                    opt.zero_grad()
+                with Profiler('train_backward'):
+                    loss.backward()
 
-                                with Profiler('pipeline_stats'):
-                                    # compute some stats for future logging purposes
-                                    num_correct = (log_probs.detach().argmax(dim=1) == target).sum().float()
-                                    ppl = loss.detach().exp()
-                                    acc = 100.0 * num_correct / target.numel()
+                with Profiler('train_opt.step'):
+                    opt.step()
 
-                                    ema_rate = 0.99
-                                    ppl_ema = ppl_ema * ema_rate + ppl * (1 - ema_rate)
-                                    acc_ema = acc_ema * ema_rate + acc * (1 - ema_rate)
+                with Profiler('train_opt.zero_grad'):
+                    opt.zero_grad()
 
-                else:
-                    with Profiler('normal_forward'):
-                        log_probs = model.forward(batch.text)
+                with Profiler('train_stats'):
+                    num_correct = (log_probs.detach().argmax(dim=2) == target).sum().float()
+                    ppl = loss.detach().exp()
+                    acc = 100.0 * num_correct / target.numel()
 
-                    with Profiler('normal_loss'):
-                        loss = loss_fn(log_probs.transpose(1, 2), batch.target)
+                    ema_rate = 0.99 ** min(20, batch_size)
+                    ppl_ema = ppl_ema * ema_rate + ppl * (1 - ema_rate)
+                    acc_ema = acc_ema * ema_rate + acc * (1 - ema_rate)
 
-                    with Profiler('normal_backward'):
-                        loss.backward()
-
-                    with Profiler('normal_opt.step'):
-                        opt.step()
-
-                    with Profiler('normal_stats'):
-                        num_correct = (log_probs.detach().argmax(dim=2) == batch.target).sum().float()
-                        ppl = loss.detach().exp()
-                        acc = 100.0 * num_correct / batch.target.numel()
-
-                        ema_rate = max(0.8, 0.99 - (batch_size - 1) * 0.01)
-                        ppl_ema = ppl_ema * ema_rate + ppl * (1 - ema_rate)
-                        acc_ema = acc_ema * ema_rate + acc * (1 - ema_rate)
-
-                # do some logging for perplexity and accuracy
-                runtime = round(time.time() - epoch_start_time)
-                print(f'\rEpoch {epoch} | Time: {runtime} sec | Batch #{i + 1}/{len(train_iter)} | '
-                      f'Train PPL: {ppl_ema:.2f} | Train Acc: {acc_ema:.2f}%', end='')
+                    # do some logging for perplexity and accuracy
+                    runtime = round(time.time() - epoch_start_time)
+                    print(f'\rEpoch {epoch} | Time: {runtime} sec | Batch #{i + 1}/{len(train_iter)} | '
+                          f'Train PPL: {ppl_ema:.2f} | Train Acc: {acc_ema:.2f}%', end='')
 
             print()
 
@@ -166,7 +150,7 @@ if __name__ == '__main__':
 
     # building a pipeline model model
     model = PipelineModel(
-        hidden_size=1024, num_layers=1, emb_dropout=0.5, out_dropout=0.5,
+        hidden_size=128, num_layers=1, emb_dropout=0.5, out_dropout=0.5,
     )
     model = model.to(device)
 
@@ -176,5 +160,5 @@ if __name__ == '__main__':
     train_model(
         model, model_name='pipeline', num_epochs=5,
         learning_rate=0.001, weight_decay=0.0, log_freq=1,
-        batch_size=128, pipeline=True
+        batch_size=1, pipeline=True
     )
